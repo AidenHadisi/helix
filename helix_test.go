@@ -536,3 +536,28 @@ func TestHydrateRequestCommon(t *testing.T) {
 		t.Errorf("expected ErrorMessage to be \"%s\", got \"%s\"", sampleErrorMessage, targetResponse.ResponseCommon.ErrorMessage)
 	}
 }
+
+func TestRefreshTokenCallbackOnSuccess(t *testing.T) {
+	t.Parallel()
+
+	options := &Options{
+		ClientID:         "my-client-id",
+		ClientSecret:     "my-client-secret",
+		UserRefreshToken: "my-refresh-token",
+		UserAccessToken:  "my-access-token",
+		AutoRefresh:      true,
+		RefreshFunc: func(data *RefreshTokenResponse) error {
+			return errors.New("This should not show up")
+
+		},
+	}
+
+	respBody := `{"data":[{"id":"EncouragingPluckySlothSSSsss","url":"https://clips.twitch.tv/EncouragingPluckySlothSSSsss","embed_url":"https://clips.twitch.tv/embed?clip=EncouragingPluckySlothSSSsss","broadcaster_id":"26490481","creator_id":"143839181","video_id":"222004532","game_id":"490377","language":"en","title":"summit and fat tim discover how to use maps","view_count":81808,"created_at":"2018-01-25T04:04:15Z","thumbnail_url":"https://clips-media-assets.twitch.tv/182509178-preview-480x272.jpg"}]}`
+
+	c := newMockClient(options, newMockHandler(http.StatusOK, respBody, nil))
+	_, err := c.GetStreams(&StreamsParams{})
+	if err != nil {
+		t.Errorf("Did not expect error, got \"%s\"", err.Error())
+	}
+
+}

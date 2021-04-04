@@ -32,19 +32,23 @@ type Client struct {
 	mu           sync.RWMutex
 	opts         *Options
 	lastResponse *Response
+	refMutex     sync.Mutex
 }
 
 // Options ...
 type Options struct {
-	ClientID        string
-	ClientSecret    string
-	AppAccessToken  string
-	UserAccessToken string
-	UserAgent       string
-	RedirectURI     string
-	HTTPClient      HTTPClient
-	RateLimitFunc   RateLimitFunc
-	APIBaseURL      string
+	ClientID         string
+	ClientSecret     string
+	AppAccessToken   string
+	UserAccessToken  string
+	UserRefreshToken string
+	UserAgent        string
+	RedirectURI      string
+	HTTPClient       HTTPClient
+	RateLimitFunc    RateLimitFunc
+	AutoRefresh      bool
+	RefreshFunc      RefreshFunc
+	APIBaseURL       string
 }
 
 // DateRange is a generic struct used by various responses.
@@ -55,6 +59,10 @@ type DateRange struct {
 
 // RateLimitFunc ...
 type RateLimitFunc func(*Response) error
+
+// RefreshFunc is a callback function for when the UserAccessToken is automatically refreshed.
+// Use this to store your new tokens somewhere.
+type RefreshFunc func(*RefreshTokenResponse) error
 
 // ResponseCommon ...
 type ResponseCommon struct {
@@ -111,6 +119,10 @@ type Pagination struct {
 func NewClient(options *Options) (*Client, error) {
 	if options.ClientID == "" {
 		return nil, errors.New("A client ID was not provided but is required")
+	}
+
+	if options.AutoRefresh && (options.UserAccessToken == "" || options.UserRefreshToken == "" || options.ClientSecret == "") {
+		return nil, errors.New("to use AutoRefresh you must provide valid values for UserAccessToken, UserRefreshToken, and ClientSecret")
 	}
 
 	if options.HTTPClient == nil {
@@ -314,6 +326,7 @@ func (c *Client) doRequest(req *http.Request, resp *Response) error {
 	c.setRequestHeaders(req)
 
 	rateLimitFunc := c.opts.RateLimitFunc
+	refreshFunc := c.opts.RefreshFunc
 
 	for {
 		if c.lastResponse != nil && rateLimitFunc != nil {
@@ -351,6 +364,47 @@ func (c *Client) doRequest(req *http.Request, resp *Response) error {
 			if err != nil {
 				return fmt.Errorf("Failed to decode API response: %s", err.Error())
 			}
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized && c.opts.AutoRefresh {
+
+			curToken := c.GetUserAccessToken()
+
+			c.refMutex.Lock()
+
+			if c.GetUserAccessToken() == curToken {
+				var refreshData *RefreshTokenResponse
+
+				refreshData, err = c.RefreshUserAccessToken(c.opts.UserRefreshToken)
+
+				if refreshData.StatusCode != http.StatusOK {
+					err = fmt.Errorf("failed to refresh UserAccessToken")
+				}
+
+				//Replace the tokens internally
+				if err == nil {
+
+					c.opts.UserRefreshToken = refreshData.Data.RefreshToken
+					c.opts.UserAccessToken = refreshData.Data.AccessToken
+
+					//Refresh callback function is optional. Called only if the user has provided one
+					if refreshFunc != nil {
+						err = refreshFunc(refreshData)
+
+					}
+
+				}
+
+			}
+
+			c.refMutex.Unlock()
+
+			if curToken == c.GetUserAccessToken() {
+				return err
+			}
+			c.setRequestHeaders(req)
+
+			continue
 		}
 
 		if rateLimitFunc == nil {
